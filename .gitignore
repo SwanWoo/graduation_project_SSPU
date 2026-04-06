@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Generated
+毕业论文_生成.docx
+
+# Template generated media (formula PNGs, downloaded images)
+template/word/media/formula_*
+template/word/media/image_*
+template/word/media/test_*
+
+# OS
+.DS_Store
