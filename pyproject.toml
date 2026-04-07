@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Markdown 毕业论文转 Word 文档工具"
 requires-python = ">=3.10"
 dependencies = [
+    "latex2mathml>=3.79.0",
     "pymupdf>=1.24",
 ]
 

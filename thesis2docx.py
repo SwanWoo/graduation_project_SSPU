@@ -35,10 +35,20 @@ import tempfile
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
+from latex2mathml import converter
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+M_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
 R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 XML_NS = '{http://www.w3.org/XML/1998/namespace}'
+ML_NS = '{http://www.w3.org/1998/Math/MathML}'
+
+UPRIGHT_FUNCTIONS = {
+    'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'arcsin', 'arccos', 'arctan',
+    'sinh', 'cosh', 'tanh', 'log', 'ln', 'exp', 'lim', 'min', 'max',
+    'sup', 'inf', 'det', 'dim', 'mod', 'gcd', 'deg', 'arg', 'hom',
+    'ker', 'Im', 'Re', 'Pr',
+}
 
 
 # ============================================================
@@ -71,6 +81,218 @@ def register_namespaces():
     ET.register_namespace('r', R_NS)
     # w: 作为主命名空间前缀（而非默认命名空间，避免与 w:document 根元素冲突）
     ET.register_namespace('w', W)
+
+
+# ============================================================
+# 1.5 LaTeX → OMML 转换（行内公式）
+# ============================================================
+
+def _mathml_children(elem):
+    """获取 MathML 元素的直接子元素列表（跳过注释等非元素节点）。"""
+    return [c for c in elem if isinstance(c.tag, str)]
+
+
+def _convert_mathml_node(src, dest_parent):
+    """递归地将 MathML 元素转换为 OMML 元素，追加到 dest_parent。"""
+    tag = src.tag
+    local = tag.replace(ML_NS, '') if tag.startswith('{') else tag
+
+    if local == 'math' or local == 'mrow':
+        for child in _mathml_children(src):
+            _convert_mathml_node(child, dest_parent)
+        return
+
+    if local in ('mi', 'mn', 'mo', 'mtext'):
+        r = ET.SubElement(dest_parent, f'{{{M_NS}}}r')
+        text = (src.text or '').strip() or src.text or ''
+        t = ET.SubElement(r, f'{{{M_NS}}}t')
+        t.text = text
+        t.set(f'{XML_NS}space', 'preserve')
+        # 函数名 upright 样式
+        if local == 'mi' and text in UPRIGHT_FUNCTIONS:
+            rpr = ET.SubElement(r, f'{{{M_NS}}}rPr')
+            sty = ET.SubElement(rpr, f'{{{M_NS}}}sty')
+            sty.set(f'{{{M_NS}}}val', 'p')
+        return
+
+    if local == 'mfrac':
+        f = ET.SubElement(dest_parent, f'{{{M_NS}}}f')
+        children = _mathml_children(src)
+        if len(children) >= 2:
+            num = ET.SubElement(f, f'{{{M_NS}}}num')
+            _convert_mathml_node(children[0], num)
+            den = ET.SubElement(f, f'{{{M_NS}}}den')
+            _convert_mathml_node(children[1], den)
+        return
+
+    if local == 'msup':
+        s = ET.SubElement(dest_parent, f'{{{M_NS}}}sSup')
+        children = _mathml_children(src)
+        if len(children) >= 2:
+            e = ET.SubElement(s, f'{{{M_NS}}}e')
+            _convert_mathml_node(children[0], e)
+            sup = ET.SubElement(s, f'{{{M_NS}}}sup')
+            _convert_mathml_node(children[1], sup)
+        return
+
+    if local == 'msub':
+        s = ET.SubElement(dest_parent, f'{{{M_NS}}}sSub')
+        children = _mathml_children(src)
+        if len(children) >= 2:
+            e = ET.SubElement(s, f'{{{M_NS}}}e')
+            _convert_mathml_node(children[0], e)
+            sub = ET.SubElement(s, f'{{{M_NS}}}sub')
+            _convert_mathml_node(children[1], sub)
+        return
+
+    if local == 'msubsup':
+        s = ET.SubElement(dest_parent, f'{{{M_NS}}}sSubSup')
+        children = _mathml_children(src)
+        if len(children) >= 3:
+            e = ET.SubElement(s, f'{{{M_NS}}}e')
+            _convert_mathml_node(children[0], e)
+            sub = ET.SubElement(s, f'{{{M_NS}}}sub')
+            _convert_mathml_node(children[1], sub)
+            sup = ET.SubElement(s, f'{{{M_NS}}}sup')
+            _convert_mathml_node(children[2], sup)
+        return
+
+    if local == 'msqrt':
+        rad = ET.SubElement(dest_parent, f'{{{M_NS}}}rad')
+        deg = ET.SubElement(rad, f'{{{M_NS}}}deg')
+        e = ET.SubElement(rad, f'{{{M_NS}}}e')
+        for child in _mathml_children(src):
+            _convert_mathml_node(child, e)
+        return
+
+    if local == 'mroot':
+        rad = ET.SubElement(dest_parent, f'{{{M_NS}}}rad')
+        children = _mathml_children(src)
+        # mroot: [base, index] → OMML: m:e=base, m:deg=index
+        deg = ET.SubElement(rad, f'{{{M_NS}}}deg')
+        e = ET.SubElement(rad, f'{{{M_NS}}}e')
+        if len(children) >= 1:
+            _convert_mathml_node(children[0], e)
+        if len(children) >= 2:
+            _convert_mathml_node(children[1], deg)
+        return
+
+    if local == 'mover':
+        children = _mathml_children(src)
+        if len(children) >= 2:
+            # 检查是否为重音符号（第二个子元素是单个字符的 mo）
+            acc_char = ''
+            acc_src = children[1]
+            acc_tag = acc_src.tag.replace(ML_NS, '') if acc_src.tag.startswith('{') else acc_src.tag
+            if acc_tag == 'mo' and acc_src.text and len(acc_src.text.strip()) <= 2:
+                acc_char = acc_src.text.strip()
+            if acc_char:
+                acc = ET.SubElement(dest_parent, f'{{{M_NS}}}acc')
+                accPr = ET.SubElement(acc, f'{{{M_NS}}}accPr')
+                chr_el = ET.SubElement(accPr, f'{{{M_NS}}}chr')
+                chr_el.set(f'{{{M_NS}}}val', acc_char)
+                e = ET.SubElement(acc, f'{{{M_NS}}}e')
+                _convert_mathml_node(children[0], e)
+            else:
+                limU = ET.SubElement(dest_parent, f'{{{M_NS}}}limUpp')
+                e = ET.SubElement(limU, f'{{{M_NS}}}e')
+                _convert_mathml_node(children[0], e)
+                lim = ET.SubElement(limU, f'{{{M_NS}}}lim')
+                _convert_mathml_node(children[1], lim)
+        return
+
+    if local == 'munder':
+        children = _mathml_children(src)
+        if len(children) >= 2:
+            limL = ET.SubElement(dest_parent, f'{{{M_NS}}}limLow')
+            e = ET.SubElement(limL, f'{{{M_NS}}}e')
+            _convert_mathml_node(children[0], e)
+            lim = ET.SubElement(limL, f'{{{M_NS}}}lim')
+            _convert_mathml_node(children[1], lim)
+        return
+
+    if local == 'munderover':
+        children = _mathml_children(src)
+        if len(children) >= 3:
+            # 尝试检测 nary (求和/积分/乘积)
+            nary_chars = {'∑': '∑', '∏': '∏', '∫': '∫', '⋃': '⋃', '⋂': '⋂'}
+            base_text = ''
+            base_src = children[0]
+            base_tag = base_src.tag.replace(ML_NS, '') if base_src.tag.startswith('{') else base_src.tag
+            if base_tag == 'mo' and base_src.text:
+                base_text = base_src.text.strip()
+            if base_text in nary_chars:
+                nary = ET.SubElement(dest_parent, f'{{{M_NS}}}nary')
+                naryPr = ET.SubElement(nary, f'{{{M_NS}}}naryPr')
+                chr_el = ET.SubElement(naryPr, f'{{{M_NS}}}chr')
+                chr_el.set(f'{{{M_NS}}}val', nary_chars[base_text])
+                limLoc = ET.SubElement(naryPr, f'{{{M_NS}}}limLoc')
+                limLoc.set(f'{{{M_NS}}}val', 'subSup')
+                sub = ET.SubElement(nary, f'{{{M_NS}}}sub')
+                _convert_mathml_node(children[1], sub)
+                sup = ET.SubElement(nary, f'{{{M_NS}}}sup')
+                _convert_mathml_node(children[2], sup)
+                e = ET.SubElement(nary, f'{{{M_NS}}}e')
+            else:
+                # 普通上下标
+                nary = ET.SubElement(dest_parent, f'{{{M_NS}}}nary')
+                naryPr = ET.SubElement(nary, f'{{{M_NS}}}naryPr')
+                limLoc = ET.SubElement(naryPr, f'{{{M_NS}}}limLoc')
+                limLoc.set(f'{{{M_NS}}}val', 'subSup')
+                sub = ET.SubElement(nary, f'{{{M_NS}}}sub')
+                _convert_mathml_node(children[1], sub)
+                sup = ET.SubElement(nary, f'{{{M_NS}}}sup')
+                _convert_mathml_node(children[2], sup)
+                e = ET.SubElement(nary, f'{{{M_NS}}}e')
+                _convert_mathml_node(children[0], e)
+        return
+
+    if local == 'mtable':
+        m = ET.SubElement(dest_parent, f'{{{M_NS}}}m')
+        for child in _mathml_children(src):
+            _convert_mathml_node(child, m)
+        return
+
+    if local == 'mtr':
+        mr = ET.SubElement(dest_parent, f'{{{M_NS}}}mr')
+        for child in _mathml_children(src):
+            _convert_mathml_node(child, mr)
+        return
+
+    if local == 'mtd':
+        e = ET.SubElement(dest_parent, f'{{{M_NS}}}e')
+        for child in _mathml_children(src):
+            _convert_mathml_node(child, e)
+        return
+
+    if local == 'mo' and (src.get('fence') == 'true' or src.text in ('(', ')', '[', ']', '{', '}', '|', '‖')):
+        # 括号元素
+        _convert_mathml_node.__wrapped__(src, dest_parent) if False else None
+        r = ET.SubElement(dest_parent, f'{{{M_NS}}}r')
+        t = ET.SubElement(r, f'{{{M_NS}}}t')
+        t.text = (src.text or '')
+        t.set(f'{XML_NS}space', 'preserve')
+        return
+
+    # 未知元素：递归处理子元素
+    for child in _mathml_children(src):
+        _convert_mathml_node(child, dest_parent)
+
+
+def latex_to_omml(latex_str):
+    """将 LaTeX 行内公式转换为 OMML <m:oMath> 元素。失败返回 None。"""
+    try:
+        latex_str = latex_str.strip()
+        if not latex_str:
+            return None
+        mathml_str = converter.convert(latex_str)
+        mathml_elem = ET.fromstring(mathml_str)
+        omath = ET.Element(f'{{{M_NS}}}oMath')
+        _convert_mathml_node(mathml_elem, omath)
+        return omath
+    except Exception as e:
+        print(f'  警告: 行内公式转换失败: {e}', file=sys.stderr)
+        return None
 
 
 # ============================================================
@@ -284,6 +506,7 @@ def parse_inline(text):
 
 def strip_markdown_formatting(text):
     """去除 Markdown 格式标记，只保留纯文本。"""
+    text = re.sub(r'(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)', r'\1', text)
     text = re.sub(r'\*\*\*(.+?)\*\*\*', r'\1', text)
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
@@ -339,7 +562,37 @@ def make_text_run(text, bold=False, italic=False, code=False, font_ascii=None, f
 
 
 def add_text_to_paragraph(p, text, bold=False, italic=False, font_ascii=None):
-    """将文本添加到段落中，解析行内格式。"""
+    """将文本添加到段落中，解析行内格式和行内公式 $...$。"""
+    # 按 $...$ 分割（排除 $$），交替处理文本和公式
+    math_pattern = r'(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)'
+    last_end = 0
+
+    for m in re.finditer(math_pattern, text):
+        # 公式前的文本
+        text_before = text[last_end:m.start()]
+        if text_before:
+            _add_text_runs(p, text_before, bold, italic, font_ascii)
+
+        # 行内公式
+        latex = m.group(1)
+        omml = latex_to_omml(latex)
+        if omml is not None:
+            p.append(omml)
+        else:
+            # 回退：斜体 Cambria Math 文本
+            r = make_text_run(f'${latex}$', font_ascii='Cambria Math', font_east_asia='Cambria Math', italic=True)
+            p.append(r)
+
+        last_end = m.end()
+
+    # 最后一段文本
+    remaining = text[last_end:]
+    if remaining:
+        _add_text_runs(p, remaining, bold, italic, font_ascii)
+
+
+def _add_text_runs(p, text, bold=False, italic=False, font_ascii=None):
+    """将纯文本（不含公式）按行内格式解析后添加为 runs。"""
     inline_runs = parse_inline(text)
     for run_info in inline_runs:
         if not run_info['text']:

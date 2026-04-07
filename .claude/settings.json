@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 -c ':*)"
+      "Bash(python3 -c ':*)",
+      "Bash(uv pip:*)",
+      "Bash(uv add:*)",
+      "Bash(python3 -c \"import latex2mathml; print\\(dir\\(latex2mathml\\)\\)\")",
+      "Bash(.venv/bin/python3 -c \"from latex2mathml import converter; print\\(converter.convert\\(r'x^2 + y^2 = z^2'\\)\\)\")",
+      "Bash(.venv/bin/python3 -c \"import lxml; print\\(lxml.__version__\\)\")",
+      "Bash(.venv/bin/python3 -c ':*)",
+      "Bash(.venv/bin/python)",
+      "Bash(uv run:*)"
     ]
   }
 }
