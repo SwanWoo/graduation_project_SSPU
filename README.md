@@ -25,7 +25,7 @@ xelatex --version
 ## 使用
 
 ```bash
-uv run python thesis2docx.py
+uv run python thesis2docx.py your_paper.md
 ```
 
 生成的文件：`毕业论文_生成.docx`。用 Word 打开后会自动更新目录页码。
