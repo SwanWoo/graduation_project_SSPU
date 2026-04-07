@@ -18,6 +18,7 @@ uv sync
 确保系统已安装 XeLaTeX：
 
 ```bash
+brew install --cask mactex
 xelatex --version
 ```
 

@@ -413,6 +413,10 @@ def build_heading(block, bookmark_name=None, bookmark_id=None):
         ind = ET.SubElement(ppr, f'{{{W}}}ind')
         ind.set(f'{{{W}}}left', '0')
         ind.set(f'{{{W}}}firstLine', '0')
+        # 样式 'a' 自带 numId=1 自动编号，显式取消避免编号重复
+        numpr = ET.SubElement(ppr, f'{{{W}}}numPr')
+        numid = ET.SubElement(numpr, f'{{{W}}}numId')
+        numid.set(f'{{{W}}}val', '0')
         rpr_in_ppr = ET.SubElement(ppr, f'{{{W}}}rPr')
         fonts = ET.SubElement(rpr_in_ppr, f'{{{W}}}rFonts')
         fonts.set(f'{{{W}}}ascii', 'Times New Roman')
@@ -1857,15 +1861,22 @@ def extract_body_blocks(blocks):
 # 10. 主函数
 # ============================================================
 
+import argparse
+
 def main():
     global _bookmark_counter
     register_namespaces()
+
+    parser = argparse.ArgumentParser(description='将 Markdown 毕业论文转换为 Word 文档')
+    parser.add_argument('input', nargs='?', default='final_paper.md',
+                        help='输入的 Markdown 文件路径 (默认: final_paper.md)')
+    args = parser.parse_args()
 
     project_dir = os.path.dirname(os.path.abspath(__file__))
     template_dir = os.path.join(project_dir, 'template')
     source_xml = os.path.join(template_dir, 'word', 'document.xml')
     output_docx = os.path.join(project_dir, '毕业论文_生成.docx')
-    md_file = os.path.join(project_dir, 'final_paper.md')
+    md_file = os.path.abspath(args.input)
 
     # 读取 Markdown
     with open(md_file, 'r', encoding='utf-8') as f:
